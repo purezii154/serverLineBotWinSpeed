@@ -20,4 +20,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # สั่งรันแอปพลิเคชันผ่าน Gunicorn
-CMD gunicorn app:app -b 0.0.0.0:$PORT
+# เพิ่ม timeout เป็น 60 วินาที เพื่อให้บอทมีเวลาตื่นนานขึ้น
+CMD gunicorn --bind 0.0.0.0:$PORT app:app --timeout 60
