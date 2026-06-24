@@ -38,7 +38,11 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 
-client = Groq(api_key=GROQ_API_KEY)
+# เพิ่มการดึงค่าจาก environment มาใส่โดยตรงและตัดค่าที่ไม่จำเป็นออก
+client = Groq(
+    api_key=GROQ_API_KEY,
+    http_client=None  # เพิ่มบรรทัดนี้เพื่อบอกให้ Groq ไม่ต้องใช้ตัวช่วยจัดการ HTTP ที่อาจจะพัง
+)
 app = Flask(__name__)
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
