@@ -134,8 +134,17 @@ def get_connection(db_name="master"):
 
     driver = os.environ.get('CENTRAL_DB_DRIVER', '{ODBC Driver 17 for SQL Server}')
     conn_str = f"DRIVER={driver};SERVER={srv['ip']};DATABASE={db_name};UID={srv['uid']};PWD={srv['pwd']}"
+
+    # --- เริ่มส่วนที่แก้ไข (ใส่เบาะรองรับ Error) ---
+    try:
+        # พยายามเชื่อมต่อ และตั้งเวลา Timeout 10 วินาที ป้องกันการค้าง
+        return pyodbc.connect(conn_str, timeout=10)
+    except Exception as e:
+        # ถ้าพัง ให้ปริ้นท์สาเหตุลง Log ของ Render และส่งค่า None กลับไปให้แอปทำงานต่อได้
+        print(f"🚨 [Database Error] ไม่สามารถเชื่อมต่อ {srv['ip']} ได้: {e}")
+        return None
+    # --- จบส่วนที่แก้ไข ---
     
-    return pyodbc.connect(conn_str)
 
 # ==========================================
 # 📑 4. ฟังก์ชันจัดการรายชื่อ Database และ Server
