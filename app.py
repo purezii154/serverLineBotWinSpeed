@@ -11,8 +11,8 @@ from linebot.v3.messaging import (Configuration, ApiClient, MessagingApi,
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent, PostbackEvent
 from linebot.v3.exceptions import InvalidSignatureError
 import pyodbc
-from groq import Groq
 from dotenv import load_dotenv
+import requests
 
 # ==========================================
 # 🛡️ 1. โหลด Config และตั้งค่า Server
@@ -38,14 +38,26 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 
-# เพิ่มการดึงค่าจาก environment มาใส่โดยตรงและตัดค่าที่ไม่จำเป็นออก
-client = Groq(
-    api_key=GROQ_API_KEY,
-    http_client=None  # เพิ่มบรรทัดนี้เพื่อบอกให้ Groq ไม่ต้องใช้ตัวช่วยจัดการ HTTP ที่อาจจะพัง
-)
 app = Flask(__name__)
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
+
+# ==========================================
+# 🤖 ฟังก์ชันยิง API ของ Groq โดยตรง (แทนไลบรารีเดิมที่พัง)
+# ==========================================
+def get_ai_response(prompt):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "llama-3.1-8b-instant",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0
+    }
+    response = requests.post(url, headers=headers, json=data)
+    return response.json()['choices'][0]['message']['content']
 
 # ==========================================
 # 💂‍♂️ 2. ระบบ Session โลคอล (SQLite)
@@ -306,7 +318,6 @@ def get_stock_summary(db_name):
     conn.close()
     return rows
 
-# 🌟 ฟังก์ชันค้นหาสินค้าอัจฉริยะ (คืนค่าเป็น List เสมอ)
 # ==========================================
 # 🔍 ฟังก์ชันค้นหาสินค้าอัจฉริยะ (AI ทำงาน 2 ชั้น)
 # ==========================================
@@ -316,18 +327,13 @@ def ai_search(user_text, db_name):
     cursor = conn.cursor()
     safe_text = user_text.replace("'", "''") 
 
-    # 🌟 Step 1: ให้ AI ดึงคีย์เวิร์ด แก้คำผิด และเว้นวรรคคำที่ติดกัน
+    # 🌟 Step 1: ให้ AI ดึงคีย์เวิร์ด
     try:
         prompt_kw = f'''ดึงคีย์เวิร์ดสำคัญและแก้คำผิดจากคำค้นหานี้: "{safe_text}"
 (ตัวอย่าง: "Moonsoon" -> "Monsoon", "ลำใย" -> "ลำไย", "ไวน์องุ่นsunny" -> "ไวน์องุ่น sunny")
 ตอบกลับเฉพาะคีย์เวิร์ดที่แยกด้วยช่องว่าง ห้ามพิมพ์อธิบาย'''
         
-        resp1 = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt_kw}],
-            model="llama-3.1-8b-instant", temperature=0
-        )
-        ai_text = resp1.choices[0].message.content.strip()
-        # ตัดอักขระพิเศษที่ AI อาจจะแถมมา
+        ai_text = get_ai_response(prompt_kw).strip()
         ai_text = ai_text.replace('"', '').replace("'", "").replace(",", " ")
         keywords = ai_text.split()
     except:
@@ -335,7 +341,7 @@ def ai_search(user_text, db_name):
         
     if not keywords: keywords = [safe_text]
 
-    # 🌟 Step 2: ค้นหาในฐานข้อมูลด้วยคีย์เวิร์ดที่แก้แล้ว (ค้นหาแบบบังคับเจอทุกคำก่อน)
+    # 🌟 Step 2: ค้นหาในฐานข้อมูล
     where_clauses = []
     params = []
     for kw in keywords:
@@ -347,7 +353,6 @@ def ai_search(user_text, db_name):
     cursor.execute(query, params)
     items = cursor.fetchall()
 
-    # ถ้าค้นหาแบบบังคับเจอทุกคำไม่เจอ ลองค้นหาแบบหย่อนยาน (OR) เผื่อมีคำใดคำหนึ่งตรง
     if not items:
         query_or = f"SELECT TOP 20 ItemCode, ItemName FROM whItem WHERE {' OR '.join(where_clauses)} ORDER BY ItemName"
         cursor.execute(query_or, params)
@@ -358,40 +363,32 @@ def ai_search(user_text, db_name):
     if not items: return []
     clean_items = [(str(row[0]).strip(), str(row[1]).strip()) for row in items]
 
-    # ถ้าเจอเป๊ะๆ 1 รายการอยู่แล้ว คืนค่าได้เลยทันที
     if len(clean_items) == 1:
         return [clean_items[0][0]]
 
-    # 🌟 Step 3: เจอหลายรายการ -> ให้ AI ช่วยกรองและตัดสินใจฟันธง
+    # 🌟 Step 3: เจอหลายรายการ -> ให้ AI ช่วยกรอง
     item_list_str = "\n".join([f"{c}: {n}" for c, n in clean_items])
     prompt_filter = f'''คำค้นหาจากผู้ใช้: "{user_text}"
 รายการสินค้าที่พบในระบบ:
 {item_list_str}
 
 คำสั่ง:
-1. หากผู้ใช้ระบุเจาะจง (เช่น มีคำว่า เล็ก, ใหญ่, sunny, Monsoon) ให้วิเคราะห์และเลือก "รหัสสินค้าที่ตรงเป๊ะที่สุดเพียง 1 รหัสเท่านั้น"
-2. หากคำค้นหาเป็นคำกว้างๆ (เช่น ลำใย, ไวน์) ให้เลือก "รหัสสินค้าที่เข้าข่ายทั้งหมด"
+1. หากผู้ใช้ระบุเจาะจง ให้เลือก "รหัสสินค้าที่ตรงเป๊ะที่สุดเพียง 1 รหัสเท่านั้น"
+2. หากคำค้นหาเป็นคำกว้างๆ ให้เลือก "รหัสสินค้าที่เข้าข่ายทั้งหมด"
 3. ตอบเฉพาะรหัสสินค้า (ItemCode) ห้ามมีข้อความอธิบายอื่นใดทั้งสิ้น'''
 
     try:
-        resp2 = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt_filter}],
-            model="llama-3.1-8b-instant", temperature=0
-        )
-        filtered_text = resp2.choices[0].message.content.strip()
-        
-        # ค้นหารหัสสินค้าที่ AI ตอบกลับมาแบบแม่นยำ 100%
+        filtered_text = get_ai_response(prompt_filter).strip()
         extracted_codes = re.findall(r'[A-Za-z0-9\-]+', filtered_text)
         final_results = [code for code, name in clean_items if code in extracted_codes]
                 
-        # ถ้า AI ช่วยเลือกได้สำเร็จ ให้ส่งกลับเฉพาะที่ AI เลือก
         if final_results:
             return final_results[:10]
     except:
         pass
 
-    # หาก AI กรองพัง ให้ส่งกลับทั้งหมดตามปกติให้ลูกค้าสไลด์ดู
     return [item[0] for item in clean_items[:10]]
+
 # ==========================================
 # 💬 6. ฟังก์ชันสร้าง Flex Messages
 # ==========================================
@@ -690,10 +687,7 @@ def handle_message(event):
         target_item = user_text.replace('ราคา ', '').strip()
         is_code = bool(re.match(r'^[A-Za-z0-9\-]+$', target_item) and len(target_item) <= 20)
         
-        # 🌟 ฟังก์ชันตอนนี้คืนค่า List เสมอ
         search_results = [target_item] if is_code else ai_search(target_item, db_name)
-
-        # 🌟 เติมบรรทัดนี้: ลบรหัสสินค้าที่ซ้ำกันออก ให้เหลือแค่อันเดียว
         search_results = list(dict.fromkeys(search_results))
         
         if not search_results: 
@@ -727,10 +721,7 @@ def handle_message(event):
     else:
         is_code = bool(re.match(r'^[A-Za-z0-9\-]+$', user_text) and len(user_text) <= 20)
         
-        # 🌟 ฟังก์ชันตอนนี้คืนค่า List เสมอ
         search_results = [user_text] if is_code else ai_search(user_text, db_name)
-
-        # 🌟 เติมบรรทัดนี้: ลบรหัสสินค้าที่ซ้ำกันออก เช่นกัน
         search_results = list(dict.fromkeys(search_results))
         
         if not search_results:
