@@ -740,9 +740,9 @@ def handle_message(event):
             else:
                 send_text(event.reply_token, f"[{db_name}]\n❌ ไม่พบสินค้านี้ในสต็อกครับ")
 
+init_sqlite_db()
+
 if __name__ == '__main__':
-    init_sqlite_db()
-    
     from pyngrok import ngrok
     ngrok_token = os.environ.get('NGROK_AUTH_TOKEN')
     if ngrok_token:
